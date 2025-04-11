@@ -1,8 +1,10 @@
-"""Constants.
+"""Constants."""
 
-== SEMANTIC_TOKENS
+MAX_CONCURRENT_DEBOUNCE_CALLS = 10
+"""The maximum number of concurrent calls allowed by the debounce decorator."""
 
-all tokens reported to client
+"""
+All tokens reported to client.
 
 Not all tokens are to be used, so we may be missing some here
 https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_semanticTokens

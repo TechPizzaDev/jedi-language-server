@@ -4,7 +4,6 @@ This module is a bridge between `jedi.Refactoring` and
 `pygls.types.TextEdit` types
 """
 
-
 import ast
 import difflib
 from bisect import bisect_right
@@ -23,7 +22,9 @@ from lsprotocol.types import (
     TextDocumentEdit,
     TextEdit,
 )
-from pygls.workspace import Document, Workspace
+from pygls.workspace import Workspace
+
+from . import notebook_utils
 
 
 def is_valid_python(code: str) -> bool:
@@ -74,36 +75,50 @@ class RefactoringConverter:
         changed_files = self.refactoring.get_changed_files()
         for path, changed_file in changed_files.items():
             uri = path.as_uri()
-            document = self.workspace.get_document(uri)
+            document = self.workspace.get_text_document(uri)
+            notebook_mapper = notebook_utils.notebook_coordinate_mapper(
+                self.workspace, notebook_uri=uri
+            )
+            source = (
+                notebook_mapper.notebook_source
+                if notebook_mapper
+                else document.source
+            )
             version = 0 if document.version is None else document.version
-            text_edits = lsp_text_edits(document, changed_file)
+            text_edits = lsp_text_edits(source, changed_file)
             if text_edits:
-                yield TextDocumentEdit(
+                text_document_edit = TextDocumentEdit(
                     text_document=OptionalVersionedTextDocumentIdentifier(
                         uri=uri,
                         version=version,
                     ),
                     edits=text_edits,
                 )
+                if notebook_mapper is not None:
+                    yield from notebook_mapper.cell_text_document_edits(
+                        text_document_edit
+                    )
+                else:
+                    yield text_document_edit
 
 
 _OPCODES_CHANGE = {"replace", "delete", "insert"}
 
 
 def lsp_text_edits(
-    document: Document, changed_file: ChangedFile
+    old_code: str, changed_file: ChangedFile
 ) -> List[Union[TextEdit, AnnotatedTextEdit]]:
     """Take a jedi `ChangedFile` and convert to list of text edits.
 
     Handles inserts, replaces, and deletions within a text file.
 
-    Additionally, makes sure returned code is syntactically valid Python.
+    Additionally, makes sure returned code is syntactically valid
+    Python.
     """
     new_code = changed_file.get_new_code()
     if not is_valid_python(new_code):
         return []
 
-    old_code = document.source
     position_lookup = PositionLookup(old_code)
     text_edits: List[Union[TextEdit, AnnotatedTextEdit]] = []
     for opcode in get_opcodes(old_code, new_code):
@@ -140,15 +155,13 @@ class Opcode(NamedTuple):
 
 
 def get_opcodes(old: str, new: str) -> List[Opcode]:
-    """Obtain typed opcodes from two files (old and new)"""
+    """Obtain typed opcodes from two files (old and new)."""
     diff = difflib.SequenceMatcher(a=old, b=new)
     return [Opcode(*opcode) for opcode in diff.get_opcodes()]
 
 
-# pylint: disable=too-few-public-methods
 class PositionLookup:
-    """Data structure to convert a byte offset in a file to a line number and
-    character."""
+    """Data structure to convert byte offset file to line number and character."""
 
     def __init__(self, code: str) -> None:
         # Create a list saying at what offset in the file each line starts.
@@ -159,8 +172,7 @@ class PositionLookup:
             offset += len(line)
 
     def get(self, offset: int) -> Position:
-        """Get the position in the file that corresponds to the given
-        offset."""
+        """Get the position in the file that corresponds to the given offset."""
         line = bisect_right(self.line_starts, offset) - 1
         character = offset - self.line_starts[line]
         return Position(line=line, character=character)

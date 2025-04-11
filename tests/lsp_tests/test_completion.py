@@ -11,15 +11,12 @@ from tests.lsp_test_client.utils import as_uri
 
 COMPLETION_TEST_ROOT = TEST_DATA / "completion"
 
-# pylint: disable=line-too-long
-
 
 def test_lsp_completion() -> None:
     """Test a simple completion request.
 
     Test Data: tests/test_data/completion/completion_test1.py
     """
-
     with session.LspSession() as ls_session:
         ls_session.initialize()
         uri = as_uri(COMPLETION_TEST_ROOT / "completion_test1.py")
@@ -62,7 +59,7 @@ def test_lsp_completion() -> None:
             "detail": "def my_function()",
             "documentation": {
                 "kind": "markdown",
-                "value": "```text\nSimple test function.\n```",
+                "value": "Simple test function.",
             },
             "sortText": "v0",
             "filterText": "my_function",
@@ -77,7 +74,6 @@ def test_eager_lsp_completion() -> None:
 
     Test Data: tests/test_data/completion/completion_test1.py
     """
-
     with session.LspSession() as ls_session:
         # Initialize, asking for eager resolution.
         initialize_params = copy.deepcopy(VSCODE_DEFAULT_INITIALIZE)
@@ -95,7 +91,6 @@ def test_eager_lsp_completion() -> None:
             }
         )
 
-        # pylint: disable=line-too-long
         expected = {
             "isIncomplete": False,
             "items": [
@@ -105,7 +100,7 @@ def test_eager_lsp_completion() -> None:
                     "detail": "def my_function()",
                     "documentation": {
                         "kind": "markdown",
-                        "value": "```text\nSimple test function.\n```",
+                        "value": "Simple test function.",
                     },
                     "sortText": "v0",
                     "filterText": "my_function",
@@ -141,7 +136,6 @@ def test_lsp_completion_class_method() -> None:
             }
         )
 
-        # pylint: disable=line-too-long
         expected = {
             "isIncomplete": False,
             "items": [
@@ -151,7 +145,7 @@ def test_lsp_completion_class_method() -> None:
                     "detail": "def some_method(x)",
                     "documentation": {
                         "kind": "markdown",
-                        "value": "```text\nGreat method.\n```",
+                        "value": "Great method.",
                     },
                     "sortText": "v0",
                     "filterText": "some_method",
@@ -191,7 +185,7 @@ def test_lsp_completion_class_noargs() -> None:
                     "detail": "class MyClass()",
                     "documentation": {
                         "kind": "markdown",
-                        "value": "```text\nSimple class.\n```",
+                        "value": "Simple class.",
                     },
                     "sortText": "v0",
                     "filterText": "MyClass",
@@ -199,5 +193,64 @@ def test_lsp_completion_class_noargs() -> None:
                     "insertTextFormat": 2,
                 }
             ],
+        }
+        assert_that(actual, is_(expected))
+
+
+def test_lsp_completion_notebook() -> None:
+    """Test a simple completion request, in a notebook.
+
+    Test Data: tests/test_data/completion/completion_test1.ipynb
+    """
+    with session.LspSession() as ls_session:
+        ls_session.initialize()
+
+        path = COMPLETION_TEST_ROOT / "completion_test1.ipynb"
+        cell_uris = ls_session.open_notebook_document(path)
+        actual = ls_session.text_document_completion(
+            {
+                "textDocument": {"uri": cell_uris[1]},
+                "position": {"line": 0, "character": 2},
+                "context": {"triggerKind": 1},
+            }
+        )
+
+        expected = {
+            "isIncomplete": False,
+            "items": [
+                {
+                    "label": "my_function",
+                    "kind": 3,
+                    "sortText": "v0",
+                    "filterText": "my_function",
+                    "insertText": "my_function()$0",
+                    "insertTextFormat": 2,
+                }
+            ],
+        }
+        assert_that(actual, is_(expected))
+
+        actual = ls_session.completion_item_resolve(
+            {
+                "label": "my_function",
+                "kind": 3,
+                "sortText": "v0",
+                "filterText": "my_function",
+                "insertText": "my_function()$0",
+                "insertTextFormat": 2,
+            }
+        )
+        expected = {
+            "label": "my_function",
+            "kind": 3,
+            "detail": "def my_function()",
+            "documentation": {
+                "kind": "markdown",
+                "value": "Simple test function.",
+            },
+            "sortText": "v0",
+            "filterText": "my_function",
+            "insertText": "my_function()$0",
+            "insertTextFormat": 2,
         }
         assert_that(actual, is_(expected))

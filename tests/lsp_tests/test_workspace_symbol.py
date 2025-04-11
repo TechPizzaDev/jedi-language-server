@@ -10,11 +10,10 @@ SYMBOL_TEST_ROOT = TEST_DATA / "symbol"
 
 
 def test_workspace_symbol() -> None:
-    """Test document symbol request.
+    """Test workspace symbol request.
 
-    Test Data: tests/test_data/symbol/symbol_test1.py
+    Test Data: tests/test_data/symbol/somemodule2.py
     """
-
     with session.LspSession() as ls_session:
         ls_session.initialize()
         actual = ls_session.workspace_symbol({"query": "do_workspace_thing"})

@@ -9,14 +9,21 @@ import sys
 import threading
 from ast import PyCF_ONLY_AST
 from inspect import Parameter
-from typing import Dict, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 import docstring_to_markdown
 import jedi.api.errors
 import jedi.inference.references
 import jedi.settings
 from jedi import Project, Script
-from jedi.api.classes import BaseName, Completion, Name, ParamName, Signature
+from jedi.api.classes import (
+    BaseName,
+    BaseSignature,
+    Completion,
+    Name,
+    ParamName,
+    Signature,
+)
 from lsprotocol.types import (
     CompletionItem,
     CompletionItemKind,
@@ -32,39 +39,57 @@ from lsprotocol.types import (
     SymbolInformation,
     SymbolKind,
 )
-from pygls.workspace import Document
+from pygls.workspace import TextDocument
 
+from .constants import MAX_CONCURRENT_DEBOUNCE_CALLS
 from .initialization_options import HoverDisableOptions, InitializationOptions
 from .type_map import get_lsp_completion_type, get_lsp_symbol_type
 
+if sys.version_info < (3, 10):
+    from typing_extensions import ParamSpec
+else:
+    from typing import ParamSpec
 
-def debounce(interval_s, keyed_by=None):
+
+P = ParamSpec("P")
+
+
+_debounce_semaphore = threading.Semaphore(MAX_CONCURRENT_DEBOUNCE_CALLS)
+
+
+def debounce(
+    interval_s: float, keyed_by: Optional[str] = None
+) -> Callable[[Callable[P, None]], Callable[P, None]]:
     """Debounce calls to this function until interval_s seconds have passed.
 
-    Decorator copied from https://github.com/python-lsp/python-lsp-
-    server
+    Decorator adapted from https://github.com/python-lsp/python-lsp-server
     """
 
-    def wrapper(func):
-        timers = {}
+    def wrapper(func: Callable[P, None]) -> Callable[P, None]:
+        timers: Dict[Any, threading.Timer] = {}
         lock = threading.Lock()
 
         @functools.wraps(func)
-        def debounced(*args, **kwargs):
+        def debounced(*args: P.args, **kwargs: P.kwargs) -> None:
+            _debounce_semaphore.acquire()
+
             sig = inspect.signature(func)
             call_args = sig.bind(*args, **kwargs)
             key = call_args.arguments[keyed_by] if keyed_by else None
 
-            def run():
-                with lock:
-                    del timers[key]
-                return func(*args, **kwargs)
+            def run() -> None:
+                try:
+                    with lock:
+                        del timers[key]
+                    func(*args, **kwargs)
+                finally:
+                    _debounce_semaphore.release()
 
             with lock:
                 old_timer = timers.get(key)
                 if old_timer:
                     old_timer.cancel()
-
+                    _debounce_semaphore.release()
                 timer = threading.Timer(interval_s, run)
                 timers[key] = timer
                 timer.start()
@@ -75,7 +100,7 @@ def debounce(interval_s, keyed_by=None):
 
 
 def _jedi_debug_function(
-    color: str,  # pylint: disable=unused-argument
+    color: str,
     str_out: str,
 ) -> None:
     """Jedi debugging function that prints to stderr.
@@ -85,7 +110,7 @@ def _jedi_debug_function(
     print(str_out, file=sys.stderr)
 
 
-def set_jedi_settings(  # pylint: disable=invalid-name
+def set_jedi_settings(
     initialization_options: InitializationOptions,
 ) -> None:
     """Sets jedi settings."""
@@ -103,7 +128,7 @@ def set_jedi_settings(  # pylint: disable=invalid-name
         jedi.set_debug_function(func_cb=_jedi_debug_function)
 
 
-def script(project: Optional[Project], document: Document) -> Script:
+def script(project: Optional[Project], document: TextDocument) -> Script:
     """Simplifies getting jedi Script."""
     return Script(code=document.source, path=document.path, project=project)
 
@@ -131,22 +156,26 @@ def lsp_range(name: Name) -> Optional[Range]:
     )
 
 
-def lsp_location(name: Name) -> Optional[Location]:
+def lsp_location(name: Name, uri: Optional[str] = None) -> Optional[Location]:
     """Get LSP location from Jedi definition."""
-    module_path = name.module_path
-    if module_path is None:
-        return None
+    if uri is None:
+        module_path = name.module_path
+        if module_path is None:
+            return None
+        uri = module_path.as_uri()
 
     lsp = lsp_range(name)
     if lsp is None:
         return None
 
-    return Location(uri=module_path.as_uri(), range=lsp)
+    return Location(uri=uri, range=lsp)
 
 
-def lsp_symbol_information(name: Name) -> Optional[SymbolInformation]:
+def lsp_symbol_information(
+    name: Name, uri: Optional[str] = None
+) -> Optional[SymbolInformation]:
     """Get LSP SymbolInformation from Jedi definition."""
-    location = lsp_location(name)
+    location = lsp_location(name, uri)
     if location is None:
         return None
 
@@ -190,7 +219,6 @@ def lsp_document_symbols(names: List[Name]) -> List[DocumentSymbol]:
     accessible with dot notation are removed from display. See comments
     inline for cleaning steps.
     """
-    # pylint: disable=too-many-branches
     _name_lookup: Dict[Name, DocumentSymbol] = {}
     results: List[DocumentSymbol] = []
     for name in names:
@@ -289,21 +317,19 @@ def lsp_python_diagnostic(uri: str, source: str) -> Optional[Diagnostic]:
         compile(source, uri, "exec", PyCF_ONLY_AST)
         return None
     except SyntaxError as err:
-        column = err.offset - 1 if err.offset is not None else 0
-        line = err.lineno - 1 if err.lineno is not None else 0
-
+        column = max(0, err.offset - 1 if err.offset is not None else 0)
+        line = max(0, err.lineno - 1 if err.lineno is not None else 0)
         _until_column = getattr(err, "end_offset", None)
         _until_line = getattr(err, "end_lineno", None)
-
-        until_column = (
-            _until_column - 1 if _until_column is not None else column + 1
+        until_column = max(
+            0, _until_column - 1 if _until_column is not None else column + 1
         )
-        until_line = _until_line - 1 if _until_line is not None else line + 1
-
+        until_line = max(
+            0, _until_line - 1 if _until_line is not None else line
+        )
         if (line, column) >= (until_line, until_column):
             until_column, until_line = column, line
             column = 0
-
         return Diagnostic(
             range=Range(
                 start=Position(line=line, character=column),
@@ -318,8 +344,8 @@ def lsp_python_diagnostic(uri: str, source: str) -> Optional[Diagnostic]:
 def line_column(position: Position) -> Tuple[int, int]:
     """Translate pygls Position to Jedi's line/column.
 
-    Returns a dictionary because this return result should be unpacked as a
-    function argument to Jedi's functions.
+    Returns a tuple because this return result should be unpacked as a function
+    argument to Jedi's functions.
 
     Jedi is 1-indexed for lines and 0-indexed for columns. LSP is 0-indexed for
     lines and 0-indexed for columns. Therefore, add 1 to LSP's request for the
@@ -342,19 +368,19 @@ def line_column(position: Position) -> Tuple[int, int]:
 def line_column_range(pygls_range: Range) -> Dict[str, int]:
     """Translate pygls range to Jedi's line/column/until_line/until_column.
 
-    Returns a dictionary because this return result should be unpacked as a
-    function argument to Jedi's functions.
+    Returns a dictionary because this return result should be unpacked
+    as a function argument to Jedi's functions.
 
-    Jedi is 1-indexed for lines and 0-indexed for columns. LSP is 0-indexed for
-    lines and 0-indexed for columns. Therefore, add 1 to LSP's request for the
-    line.
+    Jedi is 1-indexed for lines and 0-indexed for columns. LSP is
+    0-indexed for lines and 0-indexed for columns. Therefore, add 1 to
+    LSP's request for the line.
     """
-    return dict(
-        line=pygls_range.start.line + 1,
-        column=pygls_range.start.character,
-        until_line=pygls_range.end.line + 1,
-        until_column=pygls_range.end.character,
-    )
+    return {
+        "line": pygls_range.start.line + 1,
+        "column": pygls_range.start.character,
+        "until_line": pygls_range.end.line + 1,
+        "until_column": pygls_range.end.character,
+    }
 
 
 def compare_names(name1: Name, name2: Name) -> bool:
@@ -371,12 +397,12 @@ def compare_names(name1: Name, name2: Name) -> bool:
 def complete_sort_name(name: Completion, append_text: str) -> str:
     """Return sort name for a jedi completion.
 
-    Should be passed to the sortText field in CompletionItem. Strings sort a-z,
-    a comes first and z comes last.
+    Should be passed to the sortText field in CompletionItem. Strings
+    sort a-z, a comes first and z comes last.
 
-    Additionally, we'd like to keep the sort order to what Jedi has provided.
-    For this reason, we make sure the sort-text is just a letter and not the
-    name itself.
+    Additionally, we'd like to keep the sort order to what Jedi has
+    provided. For this reason, we make sure the sort-text is just a
+    letter and not the name itself.
     """
     name_str = name.name
     if name_str is None:
@@ -392,13 +418,17 @@ def complete_sort_name(name: Completion, append_text: str) -> str:
     return "v" + append_text
 
 
-def clean_completion_name(name: str, char_before_cursor: str) -> str:
+def clean_completion_name(
+    name: str, char_before_cursor: str, char_after_cursor: str
+) -> str:
     """Clean the completion name, stripping bad surroundings.
 
     Currently, removes surrounding " and '.
     """
     if char_before_cursor in {"'", '"'}:
-        return name.lstrip(char_before_cursor)
+        name = name.lstrip(char_before_cursor)
+    if char_after_cursor in {"'", '"'}:
+        name = name.rstrip(char_after_cursor)
     return name
 
 
@@ -410,7 +440,7 @@ _POSITION_PARAMETERS = {
 _PARAM_NAME_IGNORE = {"/", "*"}
 
 
-def get_snippet_signature(signature: Signature) -> str:
+def get_snippet_signature(signature: BaseSignature) -> str:
     """Return the snippet signature."""
     params: List[ParamName] = signature.params
     if not params:
@@ -444,7 +474,6 @@ def is_import(script_: Script, line: int, column: int) -> bool:
     completions, without any text, which will may cause issues for users with
     manually triggered completions.
     """
-    # pylint: disable=protected-access
     tree_name = script_._module_node.get_name_of_position((line, column))
     if tree_name is None:
         return False
@@ -468,9 +497,10 @@ def clear_completions_cache() -> None:
     _MOST_RECENT_COMPLETIONS.clear()
 
 
-def lsp_completion_item(  # pylint: disable=too-many-arguments
+def lsp_completion_item(
     completion: Completion,
     char_before_cursor: str,
+    char_after_cursor: str,
     enable_snippets: bool,
     resolve_eagerly: bool,
     markup_kind: MarkupKind,
@@ -478,11 +508,13 @@ def lsp_completion_item(  # pylint: disable=too-many-arguments
 ) -> CompletionItem:
     """Using a Jedi completion, obtain a jedi completion item."""
     completion_name = completion.name
-    name_clean = clean_completion_name(completion_name, char_before_cursor)
+    name_clean = clean_completion_name(
+        completion_name, char_before_cursor, char_after_cursor
+    )
     lsp_type = get_lsp_completion_type(completion.type)
     completion_item = CompletionItem(
-        label=completion_name,
-        filter_text=completion_name,
+        label=name_clean,
+        filter_text=name_clean,
         kind=lsp_type,
         sort_text=complete_sort_name(completion, sort_append_text),
         insert_text=name_clean,
@@ -506,9 +538,9 @@ def lsp_completion_item(  # pylint: disable=too-many-arguments
 
     try:
         snippet_signature = get_snippet_signature(signatures[0])
-    except Exception:  # pylint: disable=broad-except
+    except Exception:
         return completion_item
-    new_text = completion_name + snippet_signature
+    new_text = name_clean + snippet_signature
     completion_item.insert_text = new_text
     completion_item.insert_text_format = InsertTextFormat.Snippet
     return completion_item
@@ -517,11 +549,6 @@ def lsp_completion_item(  # pylint: disable=too-many-arguments
 def _md_bold(value: str, markup_kind: MarkupKind) -> str:
     """Add bold surrounding when markup_kind is markdown."""
     return f"**{value}**" if markup_kind == MarkupKind.Markdown else value
-
-
-def _md_italic(value: str, markup_kind: MarkupKind) -> str:
-    """Add italic surrounding when markup_kind is markdown."""
-    return f"*{value}*" if markup_kind == MarkupKind.Markdown else value
 
 
 def _md_text(value: str, markup_kind: MarkupKind) -> str:
@@ -565,7 +592,7 @@ def convert_docstring(docstring: str, markup_kind: MarkupKind) -> str:
             return docstring_to_markdown.convert(docstring_stripped).strip()
         except docstring_to_markdown.UnknownFormatError:
             return _md_text(docstring_stripped, markup_kind)
-        except Exception as error:  # pylint: disable=broad-except
+        except Exception as error:
             result = (
                 docstring_stripped
                 + "\n"
@@ -643,7 +670,6 @@ def hover_text(
     initialization_options: InitializationOptions,
 ) -> Optional[str]:
     """Get a hover string from a list of names."""
-    # pylint: disable=too-many-branches
     if not names:
         return None
     name = names[0]

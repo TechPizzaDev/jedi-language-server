@@ -4,6 +4,82 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.44.0
+
+### Added
+
+- Support for Python notebooks. <https://github.com/pappasam/jedi-language-server/pull/333>
+
+## 0.43.1
+
+### Fixed
+
+- Removed toml-sort from pre-commit config
+
+## 0.43.0
+
+### Added
+
+- Mandatory support for Python 3.13 (by setting `jedi = "^0.19.2"`)
+
+### Removed
+
+- Dropped support for Python 3.8
+- Cleaned up dev dependencies (dropped `toml-sort` since we're not using it anymore)
+
+## 0.42.0
+
+### Fixed
+
+- Completion of dictionary keys now handles single and double quotes consistently
+
+### Changed
+
+- Jedi `Completion.path` completion items are filtered out. Resolves: <https://github.com/pappasam/jedi-language-server/issues/325>
+
+## 0.41.4
+
+### Fixed
+
+- `lsprotocol`'s dependency specification in this project ended up pulling in an alpha version of the project. This release fixes that issue: <https://github.com/pappasam/jedi-language-server/issues/302>
+
+## 0.41.3
+
+### Added
+
+- Support `textDocument/declaration`. Resolves <https://github.com/pappasam/jedi-language-server/issues/284>
+
+## 0.41.2
+
+### Fixed
+
+- Issue where `lsp_python_diagnostic` may use invalid `lsprotocol.types.Position.character`: <https://github.com/pappasam/jedi-language-server/issues/272>
+
+## 0.41.1
+
+### Added
+
+- Direct `cattrs` dependency for parsing InitializationOptions. Note: this doesn't really add a dependency because `cattrs` was already required by the existing `lsprotocol` dependency.
+
+### Removed
+
+- `pydantic` dependency; it made distributing `jedi-language-server` harder than it needed to be.
+
+## 0.41.0
+
+### Removed
+
+- Removed support for Python 3.7
+
+### Changed
+
+- `jedi` upgraded to `0.19`, adding support for Python 3.11
+- `pydantic` upgraded to `2.x` from `1.x`; Pydantic 2 contains a compiled Rust core making it faster but requiring platform specific builds
+
+### Fixed
+
+- Fixes <https://github.com/pappasam/jedi-language-server/issues/262>
+
 ## 0.40.0
 
 ### Added
